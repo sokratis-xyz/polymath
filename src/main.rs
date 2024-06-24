@@ -1,4 +1,3 @@
-use std::fmt::format;
 use std::sync::Arc;
 
 use actix_web::{web, App, HttpServer, Responder, HttpResponse};
@@ -7,11 +6,14 @@ use serde_json::{json, Value};
 use futures::future::join_all;
 use log::{debug, info, warn};
 
-use reqwest::Client;
 use readability::extractor;
 use tokio::task;
 use anyhow::{Result, Context};
 use fastembed::{TextEmbedding, EmbeddingModel, InitOptions};
+use faiss::{Index, index_factory, MetricType};
+use faiss::index::IndexImpl;
+use std::collections::HashMap;
+
 
 #[derive(Deserialize)]
 struct SearchQuery {
@@ -30,6 +32,33 @@ struct ProcessedContent {
 
 struct AppState {
     model: Arc<TextEmbedding>,
+}
+
+struct FaissIndex {
+    index: IndexImpl,
+    url_to_indices: HashMap<String, Vec<usize>>,
+    current_index: usize,
+}
+
+impl FaissIndex {
+    fn new() -> Result<Self, anyhow::Error> {
+        Ok(FaissIndex {
+            index: index_factory(8, "Flat", MetricType::L2)?,
+            url_to_indices: HashMap::new(),
+            current_index: 0,
+        })
+    }
+
+    fn add_embeddings(&mut self, url: &str, embeddings: &[Vec<f32>]) -> Result<Vec<usize>, anyhow::Error> {
+        let mut indices = Vec::new();
+        for embedding in embeddings {
+            self.index.add(embedding)?;
+            indices.push(self.current_index);
+            self.current_index += 1;
+        }
+        self.url_to_indices.insert(url.to_string(), indices.clone());
+        Ok(indices)
+    }
 }
 
 async fn fetch_and_process(url: String, model: Arc<TextEmbedding>) -> Result<ProcessedContent> {
@@ -99,6 +128,10 @@ async fn search_and_index(
         .map_err(actix_web::error::ErrorInternalServerError)?
         .json()
         .await
+        .map_err(actix_web::error::ErrorInternalServerError)?;
+
+    
+    let mut faiss_index = FaissIndex::new()
         .map_err(actix_web::error::ErrorInternalServerError)?;
 
     let results = process_search_results(search_results, Arc::clone(&data.model))
