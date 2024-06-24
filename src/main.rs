@@ -10,80 +10,38 @@ use log::{debug, info, warn};
 
 use futures::future::join_all;
 use reqwest::Client;
+use readability::extractor;
+use tokio::task;
 
 #[derive(Deserialize)]
 struct SearchQuery {
     q: String
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SNSearchResult {
-    query: String,
-    number_of_results: i32,
-    results: Vec<SNResult>,
-    answers: Vec<String>,
-    corrections: Vec<String>,
-    infoboxes: Vec<SNInfobox>,
-    suggestions: Vec<String>,
-    unresponsive_engines: Vec<String>,
+async fn fetch_and_extract(url: String) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    
+    // Use tokio's spawn_blocking to run synchronous readability operation
+    let extracted_content = task::spawn_blocking(move || {
+        extractor::scrape(&url)
+            .map(|product| product.content)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+    }).await??;
+
+    Ok(extracted_content)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SNResult {
-    url: String,
-    title: String,
-    content: String,
-    published_date: Option<String>,
-    thumbnail: Option<String>,
-    engine: String,
-    parsed_url: Vec<String>,
-    template: String,
-    engines: Vec<String>,
-    positions: Vec<i32>,
-    score: f64,
-    category: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SNInfobox {
-    infobox: String,
-    id: String,
-    content: String,
-    img_src: Option<String>,
-    urls: Vec<SNUrl>,
-    engine: String,
-    engines: Vec<String>,
-    attributes: Vec<SNAttribute>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SNUrl {
-    title: String,
-    url: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SNAttribute {
-    label: String,
-    value: String,
-    entity: String,
-}
-
-
-async fn fetch_url(client: &Client, url: &str) -> Result<String, reqwest::Error> {
-    let response = client.get(url).send().await?;
-    response.text().await
-}
-
-async fn process_search_results(search_results: Value) -> Vec<Result<String, reqwest::Error>> {
-    let client = Client::new();
+async fn process_search_results(search_results: Value) -> Vec<Result<String, Box<dyn std::error::Error + Send + Sync>>> {
     
     let futures: Vec<_> = search_results["results"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|result| result["url"].as_str())
-        .map(|url| fetch_url(&client, url))
+        .filter_map(|result| result["url"].as_str().map(String::from))
+        .map(|url| {
+            async move {
+                fetch_and_extract(url).await
+            }
+        })
         .collect();
 
     join_all(futures).await
