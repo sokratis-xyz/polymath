@@ -1,0 +1,31 @@
+[package]
+name = "polymath"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4.0"
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tantivy = "0.19"
+futures = "0.3"
+anyhow = "1.0"
+redis = { version = "0.22.1", features = ["tokio-comp"] }
+readability = "0.2.0"
+sha2 = "0.10.6"
+rust-bert = "0.20.0"
+tch = "0.10.1"
+faiss = {version = "0.11.0"}
+tokio = { version = "1.38.0", features = ["full"] }
+rayon = "1.8"
+log = "0.4.6"
+env_logger = "0.6.1"
+
+[dependencies.uuid]
+version = "1.9.0"
+features = [
+    "v4",                # Lets you generate random UUIDs
+    "fast-rng",          # Use a faster (but still sufficiently random) RNG
+    "macro-diagnostics", # Enable better diagnostics for compile-time UUIDs
+]
