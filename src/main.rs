@@ -11,7 +11,18 @@ use std::collections::HashMap;
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind, new_index};
 use std::sync::Mutex;
 
-#[derive(Deserialize)]
+use schemars::JsonSchema;
+use actix_web::middleware::Logger;
+
+use apistos::{api_operation, ApiComponent};
+use apistos::app::{BuildConfig, OpenApiWrapper};
+use apistos::info::Info;
+use apistos::server::Server;
+use apistos::spec::Spec;
+use apistos::web::{get, post, resource, scope};
+use apistos::{RapidocConfig, RedocConfig, ScalarConfig, SwaggerUIConfig};
+
+#[derive(Deserialize,JsonSchema, ApiComponent)]
 struct SearchQuery {
     q: String
 }
@@ -23,6 +34,7 @@ struct ProcessedContent {
     embeddings: HashMap<String, Vec<f32>>,
 }
 async fn process_search_results(search_results: Value, index: Arc<Mutex<Index>>) -> Result<HashMap<u64, (String, String)>> {
+
     let chunk_map: Arc<Mutex<HashMap<u64, (String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
     let chunk_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
 
@@ -76,6 +88,7 @@ async fn process_search_results(search_results: Value, index: Arc<Mutex<Index>>)
     Ok(chunk_map_clone)
 }
 
+#[api_operation(summary = "Process a query and return processed content")]
 async fn search_and_index(
     query: web::Query<SearchQuery>,
 ) -> actix_web::Result<HttpResponse> {
@@ -94,6 +107,8 @@ async fn search_and_index(
     
     let index: Arc<Mutex<Index>> = Arc::new(Mutex::new(new_index(&options).unwrap()));
 
+    debug!("Search results is being called");
+
     let search_results: Value = client
         .get(searxng_url)
         .query(&[("q", &query.q), ("format", &"json".to_string())])
@@ -103,19 +118,52 @@ async fn search_and_index(
         .json()
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
+    
+    debug!("Search results are in");
 
     let chunk_map = process_search_results(search_results, Arc::clone(&index))
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
     
+    debug!("Processed search results");
+
     Ok(HttpResponse::Ok().json(chunk_map))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
-        App::new()
-            .route("/search", web::get().to(search_and_index))
+
+        let spec = Spec {
+            info: Info {
+              title: "Polymath API".to_string(),
+              description: Some(
+                "This is the polymath API".to_string(),
+              ),
+              ..Default::default()
+            },
+            servers: vec![Server {
+              url: "/".to_string(),
+              ..Default::default()
+            }],
+            ..Default::default()
+          };
+        
+      App::new()
+          .document(spec)
+          .wrap(Logger::default())
+          .service(scope("/v1")
+              .service(resource("/search").route(get().to(search_and_index)))
+      )
+      .build_with(
+          "/openapi.json",
+          BuildConfig::default()
+            .with(RapidocConfig::new(&"/rapidoc"))
+            .with(RedocConfig::new(&"/redoc"))
+            .with(ScalarConfig::new(&"/scalar"))
+            .with(SwaggerUIConfig::new(&"/swagger")),
+        )
+
     })
     .bind("127.0.0.1:8080")?
     .run()
