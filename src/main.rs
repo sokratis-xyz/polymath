@@ -9,7 +9,7 @@ use log::{debug, info, warn};
 use anyhow::{Result, Context};
 use std::collections::HashMap;
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind, new_index};
-use futures::lock::Mutex;
+use std::sync::Mutex;
 
 #[derive(Deserialize)]
 struct SearchQuery {
@@ -22,9 +22,7 @@ struct ProcessedContent {
     chunks: HashMap<String, String>,
     embeddings: HashMap<String, Vec<f32>>,
 }
-
-async fn process_search_results(search_results: Value, index: &mut Index) -> Result<HashMap<u64, (String, String)>> {
-    let client = reqwest::Client::new();
+async fn process_search_results(search_results: Value, index: Arc<Mutex<Index>>) -> Result<HashMap<u64, (String, String)>> {
     let chunk_map: Arc<Mutex<HashMap<u64, (String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
     let chunk_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
 
@@ -35,9 +33,11 @@ async fn process_search_results(search_results: Value, index: &mut Index) -> Res
         .filter_map(|result| result["url"].as_str().map(String::from))
         .take(10)
         .map(|url| {
+            let client: reqwest::Client = reqwest::Client::new();
+
             let chunk_map = Arc::clone(&chunk_map);
             let chunk_counter = Arc::clone(&chunk_counter);
-            let index = index;
+            let index = Arc::clone(&index);
 
             async move {
                 let params = json!({
@@ -57,22 +57,23 @@ async fn process_search_results(search_results: Value, index: &mut Index) -> Res
 
                 let processed_content: ProcessedContent = response.json().await?;
 
-               // Add each chunk and its corresponding embedding to the index
-            for (chunk_id, chunk_text) in &processed_content.chunks {
-                let embedding = processed_content.embeddings.get(chunk_id).context("Embedding not found")?;
-                let mut chunk_counter = chunk_counter.lock().await;
-                let key: u64 = *chunk_counter;
-                index.add(key, embedding).context("Failed to add to index")?;
-                chunk_map.lock().await.insert(key, (processed_content.url.clone(), chunk_text.clone()));
-                *chunk_counter += 1;
-            }
+                // Add each chunk and its corresponding embedding to the index
+                for (chunk_id, chunk_text) in &processed_content.chunks {
+                    let embedding = processed_content.embeddings.get(chunk_id).context("Embedding not found")?;
+                    let mut chunk_counter = chunk_counter.lock().unwrap();
+                    let key: u64 = *chunk_counter;
+                    index.lock().unwrap().add(key, embedding).context("Failed to add to index")?;
+                    chunk_map.lock().unwrap().insert(key, (processed_content.url.clone(), chunk_text.clone()));
+                    *chunk_counter += 1;
+                }
                 Ok::<(), anyhow::Error>(())
             }
         })
         .collect();
 
     join_all(futures).await;
-    Ok(chunk_map.lock().await.clone())
+    let chunk_map_clone = chunk_map.lock().unwrap().clone();
+    Ok(chunk_map_clone)
 }
 
 async fn search_and_index(
@@ -91,7 +92,7 @@ async fn search_and_index(
         multi: false,
     };
     
-    let mut index: Index = new_index(&options).unwrap();
+    let index: Arc<Mutex<Index>> = Arc::new(Mutex::new(new_index(&options).unwrap()));
 
     let search_results: Value = client
         .get(searxng_url)
@@ -103,7 +104,7 @@ async fn search_and_index(
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
 
-    let chunk_map = process_search_results(search_results, &mut index)
+    let chunk_map = process_search_results(search_results, Arc::clone(&index))
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
     
