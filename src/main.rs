@@ -22,17 +22,28 @@ use apistos::spec::Spec;
 use apistos::web::{get, post, resource, scope};
 use apistos::{RapidocConfig, RedocConfig, ScalarConfig, SwaggerUIConfig};
 
-#[derive(Deserialize,JsonSchema, ApiComponent)]
+#[derive(Debug, Serialize, Deserialize, Clone,JsonSchema, ApiComponent)]
 struct SearchQuery {
     q: String
 }
 
-#[derive(Debug, Deserialize)]
+
+#[derive(Debug, Serialize, Deserialize, Clone,JsonSchema, ApiComponent)]
+struct Config {
+    chunking_type: String,
+    chunking_size: usize,
+    embedding_model: String,
+}
+
+#[derive(Debug, Serialize, Deserialize,JsonSchema, ApiComponent)]
 struct ProcessedContent {
     url: String,
-    chunks: HashMap<String, String>,
-    embeddings: HashMap<String, Vec<f32>>,
+    config: Config,
+    chunks: HashMap<usize, String>,
+    embeddings: HashMap<usize, Vec<f32>>,
+    error: Option<String>,
 }
+
 async fn process_search_results(search_results: Value, index: Arc<Mutex<Index>>) -> Result<HashMap<u64, (String, String)>> {
 
     let chunk_map: Arc<Mutex<HashMap<u64, (String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -60,23 +71,67 @@ async fn process_search_results(search_results: Value, index: Arc<Mutex<Index>>)
                     },
                     "url": url
                 });
-
-                let response = client
-                    .post("https://localhost:8081/v1/process")
+            
+                let response = match client.post("http://localhost:8081/v1/process")
                     .json(&params)
                     .send()
-                    .await?;
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(e) => {
+                        log::debug!("Error processing URL {}: {}", url, e);
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                };
+                
+                log::debug!("Processed URL {}", url);
+                
+                // Check the status code of the response
+                if response.status().is_server_error() {
+                    log::debug!("Received 500 Internal Server Error for URL {}", url);
+                    return Ok::<(), anyhow::Error>(());
+                }
 
-                let processed_content: ProcessedContent = response.json().await?;
+                log::debug!("Not a 500 {}", url);
+
+                let processed_content: ProcessedContent = match response.json().await {
+                    Ok(content) => content,
+                    Err(e) => {
+                        log::debug!("Error parsing processed content for URL {}: {}", url, e);
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                };
+                log::debug!("Can parse {}", url);
+
+                // Check if processed_content is empty
+                if processed_content.chunks.is_empty() || processed_content.embeddings.is_empty() {
+                    log::debug!("Skipping URL {} due to empty processed content", url);
+                    return Ok::<(), anyhow::Error>(());
+                }
+
+                log::debug!("Parsing starts {}", url);
 
                 // Add each chunk and its corresponding embedding to the index
                 for (chunk_id, chunk_text) in &processed_content.chunks {
-                    let embedding = processed_content.embeddings.get(chunk_id).context("Embedding not found")?;
+                    log::debug!("Step 1 {}", url);
+                    let embedding = match processed_content.embeddings.get(chunk_id) {
+                        Some(embedding) => embedding,
+                        None => {
+                            log::debug!("Embedding not found for chunk {} in URL {}", chunk_id, url);
+                            continue;
+                        }
+                    };
+                    log::debug!("Step 2 {}", url);
                     let mut chunk_counter = chunk_counter.lock().unwrap();
                     let key: u64 = *chunk_counter;
-                    index.lock().unwrap().add(key, embedding).context("Failed to add to index")?;
+                    log::debug!("Step 3 {}", url);
+                    /*if let Err(e) = index.lock().unwrap().add(key, embedding) {
+                        log::debug!("Failed to add chunk {} to index for URL {}: {}", key, url, e);
+                        continue;
+                    }*/
                     chunk_map.lock().unwrap().insert(key, (processed_content.url.clone(), chunk_text.clone()));
                     *chunk_counter += 1;
+                    log::debug!("Added chunk to index: {}", key);
                 }
                 Ok::<(), anyhow::Error>(())
             }
@@ -85,6 +140,7 @@ async fn process_search_results(search_results: Value, index: Arc<Mutex<Index>>)
 
     join_all(futures).await;
     let chunk_map_clone = chunk_map.lock().unwrap().clone();
+    log::debug!("Chunk map: {:?}", chunk_map_clone);
     Ok(chunk_map_clone)
 }
 
@@ -107,7 +163,7 @@ async fn search_and_index(
     
     let index: Arc<Mutex<Index>> = Arc::new(Mutex::new(new_index(&options).unwrap()));
 
-    debug!("Search results is being called");
+    log::debug!("Search results is being called");
 
     let search_results: Value = client
         .get(searxng_url)
@@ -119,19 +175,21 @@ async fn search_and_index(
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
     
-    debug!("Search results are in");
+    log::debug!("Search results are in");
 
     let chunk_map = process_search_results(search_results, Arc::clone(&index))
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
     
-    debug!("Processed search results");
+    log::debug!("Processed search results");
 
     Ok(HttpResponse::Ok().json(chunk_map))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    env_logger::init();
+
     HttpServer::new(move || {
 
         let spec = Spec {
