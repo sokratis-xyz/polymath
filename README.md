@@ -1,4 +1,4 @@
-# Polymath : High performance web search searvice
+# Polymath : High performance web search service
 
 A high-performance web service that processes search queries, retrieves relevant content, and performs semantic chunking and embedding operations. This is similar to what perplexity.ai does. 
 
