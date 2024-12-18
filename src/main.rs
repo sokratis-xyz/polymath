@@ -22,6 +22,9 @@ use apistos::spec::Spec;
 use apistos::web::{get, post, resource, scope};
 use apistos::{RapidocConfig, RedocConfig, ScalarConfig, SwaggerUIConfig};
 
+use dotenv::dotenv;
+use std::env;
+
 #[derive(Debug, Serialize, Deserialize, Clone,JsonSchema, ApiComponent)]
 struct SearchQuery {
     q: String
@@ -72,7 +75,8 @@ async fn process_search_results(search_results: Value, index: Arc<Mutex<Index>>)
                     "url": url
                 });
             
-                let response = match client.post("http://localhost:8081/v1/process")
+                let processor_url = env::var("PROCESSOR_URL").expect("PROCESSOR_URL must be set");
+                let response = match client.post(&processor_url)
                     .json(&params)
                     .send()
                     .await
@@ -148,7 +152,7 @@ async fn process_search_results(search_results: Value, index: Arc<Mutex<Index>>)
 async fn search_and_index(
     query: web::Query<SearchQuery>,
 ) -> actix_web::Result<HttpResponse> {
-    let searxng_url = "http://37.27.27.0/search";
+    let searxng_url = env::var("SEARXNG_URL").expect("SEARXNG_URL must be set");
     let client = reqwest::Client::new();
 
     let options = IndexOptions {
@@ -188,7 +192,12 @@ async fn search_and_index(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    dotenv().ok(); // Load .env file
     env_logger::init();
+
+    let host = env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = env::var("SERVER_PORT").unwrap_or_else(|_| "8080".to_string());
+    let bind_address = format!("{}:{}", host, port);
 
     HttpServer::new(move || {
 
@@ -223,7 +232,7 @@ async fn main() -> std::io::Result<()> {
         )
 
     })
-    .bind("127.0.0.1:8080")?
+    .bind(bind_address)?
     .run()
     .await
 }
