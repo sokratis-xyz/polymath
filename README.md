@@ -1,4 +1,4 @@
-# Polymath API
+# Polymath : High performance chunking and embedding
 
 A high-performance web service that processes search queries, retrieves relevant content, and performs semantic chunking and embedding operations.
 
