@@ -1,6 +1,6 @@
-# Polymath : High performance chunking and embedding
+# Polymath : High performance web search searvice
 
-A high-performance web service that processes search queries, retrieves relevant content, and performs semantic chunking and embedding operations.
+A high-performance web service that processes search queries, retrieves relevant content, and performs semantic chunking and embedding operations. This is similar to what perplexity.ai does. 
 
 ## 🌟 Features
 
